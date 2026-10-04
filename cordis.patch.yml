@@ -1,0 +1,9 @@
+# The bundle layer this package contributes to a profile: one row mounting the
+# notifier. `delivery: client` is the intended default — the Client half raises
+# the banner (app icon, click-to-open). Override it to `osascript` in the
+# profile's own cordis.patch.yml when the Host half should speak instead.
+- insert:
+    - id: notify-me
+      name: dsh-notify-me
+      config:
+        delivery: client

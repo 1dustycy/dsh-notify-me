@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Turn-end notification",
+    "description": "Raises a macOS notification whenever an agent turn finishes and the harness goes back to waiting for you; clicking it opens that session."
+  }
+}
