@@ -1,7 +1,8 @@
 /**
- * Unit tests for the banner decision surface. Nothing here spawns a
- * notification: the AppleScript path is checked by compiling the generated
- * program with `osacompile`, which validates syntax without running it.
+ * Unit tests for the banner decision surface, both halves. Nothing here spawns
+ * a notification: the AppleScript path is checked by compiling the generated
+ * program with `osacompile`, which validates syntax without running it, and
+ * the Client half runs against a stub page with a stub `Notification` class.
  *
  * Run with `node test/notify.test.mjs`.
  */
@@ -365,6 +366,162 @@ test("the client styles only with theme tokens", () => {
 	for (const value of styles) {
 		assert.ok(value.includes("var(--dsw-alias-"), `style ${JSON.stringify(value)} must draw on a theme token`);
 		assert.ok(!/#[0-9a-f]{3,8}\b|rgba?\(/iu.test(value), `style ${JSON.stringify(value)} must not hard-code a color`);
+	}
+});
+
+/**
+ * Boot the Client half inside a stub module loader, so its watcher can be
+ * driven through real status transitions without a browser.
+ *
+ * Nothing about the half itself is stubbed: the real `lib/client.js` source is
+ * evaluated, its factory runs, and `apply` registers the real watcher. Only
+ * the two things a page would supply — React and the `Notification` class —
+ * are fakes, and both are as dumb as the watcher allows.
+ * @returns the raised banners, a `render`, and a `dispose` for the globals.
+ */
+function bootClientHalf(delivery = "client") {
+	const raised = [];
+	const React = {
+		createElement: () => null,
+		useState: (initial) => [initial, () => {}],
+		useEffect: (effect) => effect(),
+	};
+	let watcher = null;
+	const previousNotification = globalThis.Notification;
+	globalThis.Notification = class {
+		static permission = "granted";
+
+		static requestPermission() {
+			return Promise.resolve("granted");
+		}
+
+		constructor(title, options = {}) {
+			raised.push({ title, ...options });
+		}
+	};
+	const windowStub = {
+		__DSH_NOTIFY_ME__: { delivery },
+		__ModuleLoader__: {
+			load: ({ factory }) => {
+				const client = factory((specifier) => {
+					if (specifier === "react") return React;
+					throw new Error(`the client half must not require ${specifier}`);
+				});
+				client.apply({
+					get: () => undefined,
+					slots: {
+						inject: (_seat, register) => register(),
+						register: (_options, component) => {
+							watcher = component;
+						},
+					},
+				});
+			},
+		},
+	};
+	// The bundle is a script that mounts itself on `window`, not a module, so
+	// the page it expects is passed in as that one parameter.
+	new Function("window", clientSource)(windowStub);
+	return {
+		raised,
+		/** Render the watcher once against one pair of store snapshots. */
+		render(statuses, sessions) {
+			assert.ok(watcher !== null, "the client half must register a watcher component");
+			watcher({
+				useSessionStatus: (select) => select(statuses),
+				useSessions: (select) => select(sessions),
+			});
+		},
+		dispose() {
+			globalThis.Notification = previousNotification;
+		},
+	};
+}
+
+/** One status-map snapshot, shaped like the store `useSessionStatus` publishes. */
+function statusMap(rows) {
+	return new Map(Object.entries(rows).map(([id, running]) => [id, { running, pendingInteraction: undefined, completionUnread: false }]));
+}
+
+/** One Sessions-store snapshot, shaped like the controller's own projection. */
+function sessionsStore(rows = {}) {
+	const byId = {};
+	for (const [id, row] of Object.entries(rows)) {
+		byId[id] = { id, displayTitle: id, running: false, blank: false, updatedAt: 0, ...row };
+	}
+	return { ids: Object.keys(byId), byId, phase: "ready", projectionsBySession: {} };
+}
+
+test("the client watcher announces a conversation that stopped running", () => {
+	const client = bootClientHalf();
+	try {
+		const store = sessionsStore({ root: { title: "重构登录模块" } });
+		client.render(statusMap({ root: true }), store);
+		assert.equal(client.raised.length, 0, "a cold start must announce nothing");
+		client.render(statusMap({ root: false }), store);
+		assert.equal(client.raised.length, 1);
+		assert.equal(client.raised[0].title, "会话轮次结束");
+		assert.equal(client.raised[0].body, "重构登录模块");
+	} finally {
+		client.dispose();
+	}
+});
+
+test("the client watcher stays silent when a subagent child stops running", () => {
+	const client = bootClientHalf();
+	try {
+		const store = sessionsStore({
+			root: { title: "重构登录模块" },
+			child: { origin: "subagent", parentId: "root", title: "research the API" },
+		});
+		client.render(statusMap({ root: true, child: true }), store);
+		client.render(statusMap({ root: true, child: false }), store);
+		assert.equal(client.raised.length, 0, "a delegated child finishing is not the conversation finishing");
+		client.render(statusMap({ root: false, child: false }), store);
+		assert.equal(client.raised.length, 1, "the parent still earns its own banner");
+		assert.equal(client.raised[0].body, "重构登录模块");
+	} finally {
+		client.dispose();
+	}
+});
+
+test("the client watcher still announces a fork, which also rides parentId", () => {
+	// A fork is a conversation the user owns; only `origin` marks a delegated
+	// child. Suppressing on `parentId` alone would swallow forked turns.
+	const client = bootClientHalf();
+	try {
+		const store = sessionsStore({ fork: { parentId: "root", title: "分叉出来的对话" } });
+		client.render(statusMap({ fork: true }), store);
+		client.render(statusMap({ fork: false }), store);
+		assert.equal(client.raised.length, 1);
+	} finally {
+		client.dispose();
+	}
+});
+
+test("the client watcher announces a stop it cannot classify", () => {
+	// The store shape is not a contract this plugin was written against: an id
+	// the store does not know must still raise a banner, because a banner too
+	// many is visible while a missing one is not.
+	const client = bootClientHalf();
+	try {
+		client.render(statusMap({ ghost: true }), sessionsStore());
+		client.render(statusMap({ ghost: false }), sessionsStore());
+		assert.equal(client.raised.length, 1);
+	} finally {
+		client.dispose();
+	}
+});
+
+test("the client watcher stays silent when the Host owns delivery", () => {
+	const client = bootClientHalf("osascript");
+	try {
+		const store = sessionsStore({ root: { title: "重构登录模块" } });
+		client.render(statusMap({ root: true }), store);
+		client.render(statusMap({ root: false }), store);
+		assert.equal(client.raised.length, 0);
+	} finally {
+		client.dispose();
 	}
 });
 

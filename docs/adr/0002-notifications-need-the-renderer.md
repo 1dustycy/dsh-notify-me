@@ -82,7 +82,7 @@ PID 22574    └─ DeepSeek Harness --expose-internals
 - 当前的 `osascript` 通知**永远**是 Script Editor 的图标，且**永远**点不动。
   需求 1 和 2 在宿主侧无解。
 - 要满足它们就得加一个 Client 半插件，**已经加上了**（`lib/client.js`）。
-落地的过程中有三处是踩过坑才定下来的，都写在这里免得以后改回去：
+落地的过程中有四处是踩过坑才定下来的，都写在这里免得以后改回去：
 
 **观察点必须在 `shell.overlay`，不能在 Session 行里。**
 `sidebar.session.row.leading` 看着最合适——它还直接给 `sessionId`——但它明确
@@ -101,6 +101,14 @@ PID 22574    └─ DeepSeek Harness --expose-internals
 **失败必须可见。** 渲染进程的 console 不总是够得着，所以权限不足、
 没有 Notification API 这两条静默退出会把原因渲染成左下角一个小条
 （只用 `--dsw-alias-*` token 着色）。只有出问题才出现。
+
+**子会话要自己再筛一遍。** 宿主那半是在 `turn/end` 上判 `header.origin` 的，
+Client 半根本看不见 `turn/end`，它只有状态翻转；而 `useSessionStatus` 那张表
+**只装 `running` / `pendingInteraction`，不装 `origin`**，子会话和普通会话
+一起发布（`dsh-client-ui-session` 的 `publishStatus` 把 sessions store 的
+`byId` 全量并进去）。所以子会话干完在状态表里和一次普通收工长得一模一样，
+不额外查 sessions store 的 `origin`，子 agent 每收一次工就弹一条。
+`parentId` 不能当判据——fork 出来的会话也带 `parentId`，而那是用户自己的对话。
 
 ## 相关
 

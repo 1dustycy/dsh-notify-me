@@ -47,6 +47,11 @@ _避免_: 取消、中断、打断
 `header.origin === "subagent"` 的会话：子 agent、workflow 里每次 `agent()` 调用
 各自开的会话。**一律不通知**——被派出去的子任务干完，不等于你的对话干完。
 
+两半各自判定，因为两半手上的事实不同：宿主读会话自己的 `header.origin`；
+Client 半只有 `useSessionStatus` 的状态翻转，而**状态表里没有 `origin`**
+（子会话和普通会话混在同一张表里发布），所以它改读 sessions store 里的
+`byId[id].origin`。两者都取不到时照常通知：多一条看得见，少一条看不见。
+
 _避免_: 子任务、派生会话、子进程
 
 ### 横幅（banner）

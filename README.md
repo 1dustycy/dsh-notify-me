@@ -126,7 +126,11 @@ Client 那半弹不出来时（权限不足等），界面左下角会出现一�
 | `aborted`（其他原因） | 已中断 |
 
 **子会话不弹。** 子 agent、workflow 里的每次 `agent()` 都是独立会话，它们干完活
-不算你的对话干完活。
+不算你的对话干完活。两半各判各的：宿主看 `session.header.origin`，
+Client 那半没有 `turn/end` 可看，只能看 `useSessionStatus` 的状态翻转——
+而那张状态表里**没有** `origin`，子会话混在普通会话里一起发布，所以它另外去查
+sessions store 里的 `origin === "subagent"`。查不到的 id 仍然会弹：多弹一条看得见，
+少弹一条看不见。
 
 ## 开发
 
@@ -134,8 +138,10 @@ Client 那半弹不出来时（权限不足等），界面左下角会出现一�
 node test/notify.test.mjs
 ```
 
-33 个用例覆盖通知文案的全部决策面：AppleScript 转义、正文降级链、
-触发条件筛选、配置归一化。其中一条会把生成的 AppleScript 交给
+47 个用例覆盖通知文案的全部决策面：AppleScript 转义、正文降级链、
+触发条件筛选、配置归一化，以及 Client 那半的观察者——用例会把 `lib/client.js`
+塞进一个假的 module loader 里真的跑起来，喂进状态翻转，看它弹还是不弹
+（子会话不弹就是在这里守住的）。其中一条会把生成的 AppleScript 交给
 `osacompile` 真正编译一遍（只编译，不执行），确保引号、反斜杠、换行、
 emoji 都不会生成非法脚本。
 
