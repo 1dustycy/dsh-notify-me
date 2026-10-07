@@ -82,7 +82,7 @@ PID 22574    └─ DeepSeek Harness --expose-internals
 - 当前的 `osascript` 通知**永远**是 Script Editor 的图标，且**永远**点不动。
   需求 1 和 2 在宿主侧无解。
 - 要满足它们就得加一个 Client 半插件，**已经加上了**（`lib/client.js`）。
-落地的过程中有四处是踩过坑才定下来的，都写在这里免得以后改回去：
+落地的过程中有五处是踩过坑才定下来的，都写在这里免得以后改回去：
 
 **观察点必须在 `shell.overlay`，不能在 Session 行里。**
 `sidebar.session.row.leading` 看着最合适——它还直接给 `sessionId`——但它明确
@@ -110,8 +110,32 @@ Client 半根本看不见 `turn/end`，它只有状态翻转；而 `useSessionSt
 不额外查 sessions store 的 `origin`，子 agent 每收一次工就弹一条。
 `parentId` 不能当判据——fork 出来的会话也带 `parentId`，而那是用户自己的对话。
 
+**「为什么结束」只能回问宿主。** 同一张表里也没有 `reason`，所以「你按的停止
+不弹」这条规则在 Client 半**无从判断**：状态翻转和一次普通收工完全一样。
+把原因搬进渲染进程做不到（没有宿主→页面的实时通道，见上文 IPC 那节），
+于是反过来让渲染进程问：每轮结束 `GET /api/notify-me.turn-end?session=<id>`
+→ `{"announce": true|false}`，宿主答的是**它自己那条 `shouldNotify` 的结论**。
+三点是刻意定的：
+
+- **答结论，不答事实。** 答"这一轮是不是手动停止的"会把策略拆成两份，
+  以后加规则（`enabled`、子会话、新的结束原因）就会只落到其中一半。
+- **路由挂在 Connection 的 Fetch 注册表上**（`ctx.connection.fetch.register`），
+  它是 `/api` 那条通道的一部分，自动继承 Host/Origin 围栏和浏览器会话 cookie；
+  自己 `webServer.register` 一条 exact 路由会**绕过**这层认证——exact 匹配在
+  auth 之前命中——那等于给局域网开一个不用登录的探针。
+- **问不到就照弹。** 路由缺失、超时、答非所问都算"该弹"。宿主不吭声不等于
+  什么都没发生：这套设计的失败方向必须是多一条通知，而不是少一条。
+
+顺带修掉一个同类漏洞：`enabled: false` 以前只管得住宿主那半，渲染进程该弹还弹。
+现在宿主那半即使被关掉也照常记录并注册这条路由——"关掉"必须作为**答案**送到
+渲染进程，从这一侧沉默是区分不出来的。也正因为如此，页面的注入里**只有
+`delivery`**：页面活得比配置久，把 `enabled` 塞进页面，改了配置就会有一个过期的
+开关替你做主（`false → true` 那个方向会悄悄丢通知）。
+
 ## 相关
 
-- `lib/index.js` 的 `loadElectron` / `electronBanner`
+- `lib/index.js` 的 `loadElectron` / `electronBanner`，以及 `answerTurnEndQueries`
+- `lib/turn-end.js` 的答案本与路由应答
+- `lib/client.js` 的 `hostWouldAnnounce`
 - `lib/config.js` 的 `delivery` 默认值与注释
 - ADR-0001（bundle 之外的插件不 import 裸包名）

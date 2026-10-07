@@ -51,12 +51,12 @@ plugin_manager(action: "install_bundle", target: "/Users/<you>/local_repo/dsh-no
 
 | 设置 | 默认 | 说明 |
 | --- | --- | --- |
-| `enabled` | `true` | 关掉后插件仍然挂载，只是不弹 |
+| `enabled` | `true` | 关掉后插件仍然挂载，只是不弹（两半都不弹） |
 | `title` | `"会话轮次结束"` | 通知标题 |
 | `sound` | `"Glass"` | macOS 提示音名；空串＝静音 |
 | `body` | `"session-title"` | 内容行：`session-title`｜`reply`（回复摘要）｜`none` |
 | `delivery` | 包内设为 `"client"` | 谁来弹：`client`（渲染进程，带图标可点击）｜`osascript`（宿主，点不动但必弹）｜`auto`｜`electron` |
-| `notifyAborted` | `false` | 你自己按停止的那一轮要不要也弹 |
+| `notifyAborted` | `false` | 你自己按停止的那一轮要不要也弹（两半都认这条） |
 | `maxBodyChars` | `160` | 内容行字符上限 |
 
 写错的值不会让插件挂掉：会退回默认值，并在日志里说明哪一项被忽略了。
@@ -95,6 +95,18 @@ plugin_manager(action: "install_bundle", target: "/Users/<you>/local_repo/dsh-no
 一旦注入失败 Client 就永久沉默，而"注入失败"和"插件正常但没话说"表现完全一样，
 没法区分。现在最坏情况是"可能弹两条"——一眼能看见。
 
+注入里**只有"谁出声"**：页面活得比配置久，把 `enabled` 这类开关塞进页面，
+改了配置就会有一个过期的值替你做主。
+
+**弹什么由宿主说了算。** Client 那半能从状态表里看出"某个会话不跑了"，但看不出
+**为什么**——状态表里只有 `running` / `pendingInteraction`，你按没按停止不在里面。
+所以每轮结束它都回头问一句宿主：
+`GET /api/notify-me.turn-end?session=<id>` → `{"announce": true|false}`，
+答案是宿主自己那条 `shouldNotify` 的结论（`enabled`、子会话、手动停止、`notifyAborted`
+全在里面，所以改配置对已经开着的页面也生效）。这条路由挂在 Connection 的 Fetch
+注册表上，走的是页面本来就有的 Host/Origin 围栏和浏览器会话 cookie，不需要另一套凭据。
+问不到就照弹：宿主不吭声不等于什么都没发生。
+
 Client 那半弹不出来时（权限不足等），界面左下角会出现一个小条说明原因，
 不会静默失败。
 
@@ -108,7 +120,8 @@ Client 那半弹不出来时（权限不足等），界面左下角会出现一�
 2. 看「系统设置 → 通知」里 **DeepSeek Harness**（`client`）或 **Script Editor**
    （`osascript`）有没有被静音或关掉。
 3. 确认 `enabled` 不是 `false`，并且这一轮不是你自己按停止的（除非
-   `notifyAborted: true`）。
+   `notifyAborted: true`）。这两条现在两半都认：Client 那半问宿主的路由
+   （`/api/notify-me.turn-end`）拿答案。
 
 ## 触发时机
 
@@ -122,8 +135,13 @@ Client 那半弹不出来时（权限不足等），界面左下角会出现一�
 | `error` | 出错了 ·（错误摘要） |
 | `max-tokens` | 达到长度上限 |
 | `blocked` / `interrupted` / `forked` | 已阻止 / 已中断 / 已分叉 |
-| `aborted`（你按的停止） | 已停止（默认不弹） |
+| `aborted`（你按的停止） | 已停止（默认不弹，`notifyAborted` 打开） |
 | `aborted`（其他原因） | 已中断 |
+
+**你按的停止不弹。** 按停止这个动作本身就说明你正看着屏幕。宿主按
+`reason.kind === "aborted"` 且 `reason.reason.kind === "user"` 判，Client 那半看不到
+原因，就问宿主（见上一节）；问不到时照弹，所以"多一条通知"是这套设计的失败方向，
+而不是"少一条"。
 
 **子会话不弹。** 子 agent、workflow 里的每次 `agent()` 都是独立会话，它们干完活
 不算你的对话干完活。两半各判各的：宿主看 `session.header.origin`，
@@ -138,12 +156,12 @@ sessions store 里的 `origin === "subagent"`。查不到的 id 仍然会弹：�
 node test/notify.test.mjs
 ```
 
-47 个用例覆盖通知文案的全部决策面：AppleScript 转义、正文降级链、
-触发条件筛选、配置归一化，以及 Client 那半的观察者——用例会把 `lib/client.js`
-塞进一个假的 module loader 里真的跑起来，喂进状态翻转，看它弹还是不弹
-（子会话不弹就是在这里守住的）。其中一条会把生成的 AppleScript 交给
-`osacompile` 真正编译一遍（只编译，不执行），确保引号、反斜杠、换行、
-emoji 都不会生成非法脚本。
+64 个用例覆盖通知文案的全部决策面：AppleScript 转义、正文降级链、
+触发条件筛选、配置归一化、宿主那半的路由接线，以及 Client 那半的观察者——
+用例会把 `lib/client.js` 塞进一个假的 module loader 里真的跑起来，喂进状态翻转、
+替它接上宿主的回答，看它弹还是不弹（子会话不弹、手动停止不弹都是在这里守住的）。
+其中一条会把生成的 AppleScript 交给 `osacompile` 真正编译一遍（只编译，不执行），
+确保引号、反斜杠、换行、emoji 都不会生成非法脚本。
 
 ### 改动什么时候生效
 
